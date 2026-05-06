@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 
 st.set_page_config(page_title="따릉이 타겟팅 대시보드", layout="wide", page_icon="🚴")
 
@@ -42,36 +43,67 @@ df_map = load("""
     WHERE 위도 IS NOT NULL AND 경도 IS NOT NULL
 """)
 
+@st.cache_data
+def load_geojson():
+    url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
+    r = requests.get(url)
+    return r.json()
+
+seoul_geo = load_geojson()
+
+def draw_map(df_points, dot_color, title):
+    # 구별 더미 choropleth (단색 회색 배경) + 대여소 점 오버레이
+    gu_names = [f['properties']['name'] for f in seoul_geo['features']]
+    df_gu = pd.DataFrame({'name': gu_names, 'val': 1})
+
+    fig = px.choropleth_mapbox(
+        df_gu, geojson=seoul_geo, locations='name',
+        featureidkey='properties.name',
+        color='val',
+        color_continuous_scale=[[0,'#E8EAF0'],[1,'#E8EAF0']],
+        mapbox_style='white-bg',
+        zoom=10.3, center={'lat':37.545,'lon':126.986},
+        height=500, opacity=1.0,
+    )
+    fig.update_coloraxes(showscale=False)
+    fig.update_traces(marker_line_color='#9096A8', marker_line_width=1.2)
+
+    # 이용건수 크기 정규화 (3~22px)
+    cnt = df_points['이용건수합계']
+    sizes = 3 + (cnt - cnt.min()) / (cnt.max() - cnt.min() + 1) * 19
+
+    fig.add_trace(go.Scattermapbox(
+        lat=df_points['lat'], lon=df_points['lon'],
+        mode='markers',
+        marker=dict(
+            size=sizes,
+            color=dot_color,
+            opacity=0.8,
+        ),
+        text=df_points['대여소명'],
+        customdata=df_points[['자치구','이용건수합계']],
+        hovertemplate='<b>%{text}</b><br>%{customdata[0]}<br>이용건수: %{customdata[1]:,}건<extra></extra>',
+        name='대여소',
+    ))
+
+    fig.update_layout(
+        margin=dict(l=0,r=0,t=0,b=0),
+        showlegend=False,
+    )
+    return fig
+
 tab_j, tab_i = st.tabs(["📍 정기권 TOP 100", "📍 일일권 TOP 100"])
 
 with tab_j:
     df_j = df_map[df_map['권종그룹']=='정기권'].nlargest(100,'이용건수합계')
-    fig_j = px.scatter_mapbox(
-        df_j, lat='lat', lon='lon', size='이용건수합계',
-        hover_name='대여소명', hover_data={'자치구':True,'이용건수합계':True,'lat':False,'lon':False},
-        color='이용건수합계', color_continuous_scale='Blues',
-        size_max=18, zoom=10.5, height=480,
-        mapbox_style='carto-positron',
-        title='정기권 이용 집중 지역 — 마곡·영등포·강남 역세권'
-    )
-    fig_j.update_layout(margin=dict(l=0,r=0,t=40,b=0))
-    st.plotly_chart(fig_j, use_container_width=True)
+    st.plotly_chart(draw_map(df_j, '#1A5CB0', '정기권'), use_container_width=True)
     st.info("**인사이트:** 마곡나루·영등포·강남 등 역세권 및 산업단지 중심. 출퇴근 교통수단으로 활용하는 **정기 통근자** 타겟 최적.")
     with st.expander("사용 테이블"):
         st.code("지역집계 (대여구분코드='정기권' 기준 집계)")
 
 with tab_i:
     df_i = df_map[df_map['권종그룹']=='일일권'].nlargest(100,'이용건수합계')
-    fig_i = px.scatter_mapbox(
-        df_i, lat='lat', lon='lon', size='이용건수합계',
-        hover_name='대여소명', hover_data={'자치구':True,'이용건수합계':True,'lat':False,'lon':False},
-        color='이용건수합계', color_continuous_scale='Greens',
-        size_max=18, zoom=10.5, height=480,
-        mapbox_style='carto-positron',
-        title='일일권 이용 집중 지역 — 한강공원·관광지 중심'
-    )
-    fig_i.update_layout(margin=dict(l=0,r=0,t=40,b=0))
-    st.plotly_chart(fig_i, use_container_width=True)
+    st.plotly_chart(draw_map(df_i, '#1A8A5C', '일일권'), use_container_width=True)
     st.info("**인사이트:** 망원·뚝섬·여의도 한강선착장·한강공원 집중. 주말 나들이·레저 목적의 **일회성 이용자** 타겟 최적.")
     with st.expander("사용 테이블"):
         st.code("지역집계 (대여구분코드 LIKE '%일일권%' 기준 집계)")
